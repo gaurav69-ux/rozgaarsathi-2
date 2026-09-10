@@ -1,25 +1,17 @@
-const mongoose = require('mongoose');
 const dotenv = require('dotenv');
-<<<<<<< HEAD
-const Worker = require('../models/worker');
-const GeoJob = require('../models/geojob');
-=======
-const Worker = require('../models/Worker');
-const GeoJob = require('../models/GeoJob');
->>>>>>> aa1a448f6564d384b3ccbe975778b003ffdf833a
+const { sequelize, Worker, GeoJob } = require('../models');
 
 dotenv.config();
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/job-portal';
-
 const seedData = async () => {
     try {
-        await mongoose.connect(MONGO_URI);
-        console.log('Connected to MongoDB');
+        await sequelize.authenticate();
+        await sequelize.sync({ alter: true });
+        console.log('Connected to MySQL and ensured schema');
 
         // Clear existing data
-        await Worker.deleteMany({});
-        await GeoJob.deleteMany({});
+        await Worker.destroy({ where: {} });
+        await GeoJob.destroy({ where: {} });
         console.log('Cleared existing geospatial data');
 
         // Current location (Home/Reference Point) - e.g., Mumbai
@@ -54,7 +46,7 @@ const seedData = async () => {
             }
         ];
 
-        await Worker.insertMany(workers);
+        await Worker.bulkCreate(workers);
         console.log('Seed workers inserted');
 
         // 2. Jobs
@@ -77,7 +69,7 @@ const seedData = async () => {
             }
         ];
 
-        await GeoJob.insertMany(jobs);
+        await GeoJob.bulkCreate(jobs);
         console.log('Seed jobs inserted');
 
         console.log('Seeding complete! You can now test the API.');

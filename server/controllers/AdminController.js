@@ -1,22 +1,22 @@
+const { User, Job, Application } = require('../models');
+const { Op } = require('sequelize');
+
 // @desc    Get all applications (excluding those for jobs removed by admin)
 // @route   GET /api/admin/applications
 // @access  Private/Admin
 exports.getAllApplications = async (req, res) => {
     try {
-        // Exclude applications for jobs removed by admin
-        const removedJobIds = (await Job.find({ removedByAdmin: true }, '_id')).map(j => j._id);
-        const query = removedJobIds.length ? { jobId: { $nin: removedJobIds } } : {};
+        const removedJobs = await Job.findAll({ where: { removedByAdmin: true }, attributes: ['id'] });
+        const removedJobIds = removedJobs.map(j => j.id);
+        const where = removedJobIds.length ? { jobId: { [Op.notIn]: removedJobIds } } : {};
 
-        const applications = await Application.find(query)
-            .populate('jobId', 'title')
-            .populate('jobSeekerId', 'name email')
-            .sort({ createdAt: -1 });
+        const applications = await Application.findAll({ where, include: [{ model: Job, as: 'job', attributes: ['title'] }, { model: User, as: 'jobSeeker', attributes: ['name', 'email'] }], order: [['createdAt', 'DESC']] });
 
         const result = applications.map(app => ({
-            _id: app._id,
-            jobTitle: app.jobId?.title || 'Deleted Job',
-            applicantName: app.jobSeekerId?.name || 'Unknown',
-            applicantEmail: app.jobSeekerId?.email || 'Unknown',
+            id: app.id,
+            jobTitle: app.job?.title || 'Deleted Job',
+            applicantName: app.jobSeeker?.name || 'Unknown',
+            applicantEmail: app.jobSeeker?.email || 'Unknown',
             createdAt: app.createdAt
         }));
 
@@ -26,54 +26,27 @@ exports.getAllApplications = async (req, res) => {
         res.status(500).json({ message: 'Server error fetching applications', error: error.message });
     }
 };
-const User = require('../models/User');
-const Job = require('../models/Job');
-const Application = require('../models/Application');
 
 // @desc    Get dashboard statistics
 // @route   GET /api/admin/stats
 // @access  Private/Admin
 exports.getDashboardStats = async (req, res) => {
     try {
-        // User counts
-        const totalUsers = await User.countDocuments();
-        const jobseekersCount = await User.countDocuments({ role: 'jobseeker' });
-        const employersCount = await User.countDocuments({ role: 'employer' });
-        const adminsCount = await User.countDocuments({ role: 'admin' });
+        const totalUsers = await User.count();
+        const jobseekersCount = await User.count({ where: { role: 'jobseeker' } });
+        const employersCount = await User.count({ where: { role: 'employer' } });
+        const adminsCount = await User.count({ where: { role: 'admin' } });
 
-        // Job counts (exclude removed by admin)
-        const totalJobs = await Job.countDocuments({ removedByAdmin: { $ne: true } });
-        const activeJobs = await Job.countDocuments({ status: 'open', removedByAdmin: { $ne: true } });
+        const totalJobs = await Job.count({ where: { removedByAdmin: { [Op.ne]: true } } });
+        const activeJobs = await Job.count({ where: { status: 'active', removedByAdmin: { [Op.ne]: true } } });
 
-        // Application counts (exclude those for jobs removed by admin)
-        const removedJobIds = (await Job.find({ removedByAdmin: true }, '_id')).map(j => j._id);
-        const totalApplications = await Application.countDocuments(removedJobIds.length ? { jobId: { $nin: removedJobIds } } : {});
+        const removedJobs = await Job.findAll({ where: { removedByAdmin: true }, attributes: ['id'] });
+        const removedJobIds = removedJobs.map(j => j.id);
+        const totalApplications = await Application.count({ where: removedJobIds.length ? { jobId: { [Op.notIn]: removedJobIds } } : {} });
 
-        // Recent registrations (last 5)
-        const recentUsers = await User.find()
-            .select('-password')
-            .sort({ createdAt: -1 })
-            .limit(5);
+        const recentUsers = await User.findAll({ attributes: { exclude: ['password'] }, order: [['createdAt', 'DESC']], limit: 5 });
 
-        res.json({
-            success: true,
-            stats: {
-                users: {
-                    total: totalUsers,
-                    jobseekers: jobseekersCount,
-                    employers: employersCount,
-                    admins: adminsCount
-                },
-                jobs: {
-                    total: totalJobs,
-                    active: activeJobs
-                },
-                applications: {
-                    total: totalApplications
-                }
-            },
-            recentUsers
-        });
+        res.json({ success: true, stats: { users: { total: totalUsers, jobseekers: jobseekersCount, employers: employersCount, admins: adminsCount }, jobs: { total: totalJobs, active: activeJobs }, applications: { total: totalApplications } }, recentUsers });
     } catch (error) {
         console.error('Admin stats error:', error);
         res.status(500).json({ message: 'Server error fetching admin stats', error: error.message });
@@ -85,10 +58,7 @@ exports.getDashboardStats = async (req, res) => {
 // @access  Private/Admin
 exports.getAllUsers = async (req, res) => {
     try {
-        const users = await User.find()
-            .select('-password')
-            .sort({ createdAt: -1 });
-
+        const users = await User.findAll({ attributes: { exclude: ['password'] }, order: [['createdAt', 'DESC']] });
         res.json({ success: true, users });
     } catch (error) {
         console.error('Admin get all users error:', error);
@@ -101,21 +71,10 @@ exports.getAllUsers = async (req, res) => {
 // @access  Private/Admin
 exports.deleteUser = async (req, res) => {
     try {
-        const user = await User.findById(req.params.id);
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Prevent admin from deleting themselves
-        if (user._id.toString() === req.user._id.toString()) {
-            return res.status(400).json({ message: 'Admin cannot delete themselves' });
-        }
-
-        // Optional: Perform cleanup of related data (jobs, applications, etc.)
-        // For now, just delete the user
-        await User.findByIdAndDelete(req.params.id);
-
+        const user = await User.findByPk(req.params.id);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        if (user.id === req.user.id) return res.status(400).json({ message: 'Admin cannot delete themselves' });
+        await user.destroy();
         res.json({ success: true, message: 'User deleted successfully' });
     } catch (error) {
         console.error('Admin delete user error:', error);

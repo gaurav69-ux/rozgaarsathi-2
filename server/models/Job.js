@@ -1,81 +1,26 @@
-const mongoose = require('mongoose');
-
-const jobSchema = new mongoose.Schema({
-  employerId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
-  title: {
-    type: String,
-    required: [true, 'Job title is required'],
-    trim: true
-  },
-  companyName: {
-    type: String,
-    trim: true
-  },
-  description: {
-    type: String,
-    required: [true, 'Job description is required']
-  },
-  requirements: {
-    type: String
-  },
-  category: {
-    type: String,
-    trim: true
-  },
-  jobType: {
-    type: String,
-    enum: ['full-time', 'part-time', 'remote', 'contract'],
-    required: true
-  },
-  salary: {
-    min: Number,
-    max: Number,
-    currency: {
-      type: String,
-      default: 'USD'
-    }
-  },
-  location: {
-    type: String,
-    trim: true
-  },
-  address: {
-    type: String,
-    trim: true
-  },
-  experienceLevel: {
-    type: String,
-    trim: true
-  },
-  postedDate: {
-    type: Date,
-    default: Date.now
-  },
-  deadline: {
-    type: Date
-  },
-  status: {
-    type: String,
-    enum: ['active', 'closed'],
-    default: 'active'
-  },
-  removedByAdmin: {
-    type: Boolean,
-    default: false
-  },
-  removedReason: {
-    type: String,
-    default: ''
-  }
-}, {
-  timestamps: true
-});
-
-// Index for search optimization
-jobSchema.index({ title: 'text', description: 'text', location: 'text' });
-
-module.exports = mongoose.model('Job', jobSchema);
+module.exports = (sequelize, DataTypes) => {
+  return sequelize.define('Job', {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    employerId: { type: DataTypes.INTEGER, allowNull: false },
+    title: { type: DataTypes.STRING, allowNull: false },
+    companyName: { type: DataTypes.STRING },
+    description: { type: DataTypes.TEXT, allowNull: false },
+    requirements: { type: DataTypes.TEXT },
+    category: { type: DataTypes.STRING },
+    jobType: { type: DataTypes.ENUM('full-time', 'part-time', 'remote', 'contract'), allowNull: false },
+    salaryMin: { type: DataTypes.FLOAT },
+    salaryMax: { type: DataTypes.FLOAT },
+    salaryCurrency: { type: DataTypes.STRING, defaultValue: 'USD' },
+    location: { type: DataTypes.STRING },
+    address: { type: DataTypes.STRING },
+    experienceLevel: { type: DataTypes.STRING },
+    postedDate: { type: DataTypes.DATE, defaultValue: DataTypes.NOW },
+    deadline: { type: DataTypes.DATE },
+    status: { type: DataTypes.ENUM('active', 'closed'), defaultValue: 'active' },
+    removedByAdmin: { type: DataTypes.BOOLEAN, defaultValue: false },
+    removedReason: { type: DataTypes.STRING, defaultValue: '' }
+  }, {
+    timestamps: true,
+    tableName: 'Jobs'
+  });
+};

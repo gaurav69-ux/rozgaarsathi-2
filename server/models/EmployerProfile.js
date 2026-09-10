@@ -1,37 +1,15 @@
-﻿const mongoose = require('mongoose');
-
-const employerProfileSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
-    unique: true,
-  },
-  companyName: {
-    type: String,
-    required: true,
-    trim: true,
-  },
-  companyLogo: {
-    type: String,
-  },
-  website: {
-    type: String,
-    trim: true,
-  },
-  description: {
-    type: String,
-  },
-  location: {
-    type: String,
-    trim: true,
-  },
-  industry: {
-    type: String,
-    trim: true,
-  },
-}, {
-  timestamps: true,
-});
-
-module.exports = mongoose.model('EmployerProfile', employerProfileSchema);
+﻿module.exports = (sequelize, DataTypes) => {
+  return sequelize.define('EmployerProfile', {
+    id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+    userId: { type: DataTypes.INTEGER, allowNull: false, unique: true },
+    companyName: { type: DataTypes.STRING, allowNull: false },
+    companyLogo: { type: DataTypes.STRING },
+    website: { type: DataTypes.STRING },
+    description: { type: DataTypes.TEXT },
+    location: { type: DataTypes.STRING },
+    industry: { type: DataTypes.STRING }
+  }, {
+    timestamps: true,
+    tableName: 'EmployerProfiles'
+  });
+};

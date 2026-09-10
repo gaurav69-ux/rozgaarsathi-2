@@ -1,15 +1,15 @@
 const express = require('express');
-const mongoose = require('mongoose');
+// Using Sequelize for MySQL (replaces mongoose)
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
-const connectDB = require('./config/db');
 
-// Load environment variables
+// Load environment variables before config/db initializes Sequelize
 dotenv.config();
+const { connectDB } = require('./config/db');
 
 // Initialize express app
 const app = express();

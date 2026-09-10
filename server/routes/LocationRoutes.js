@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
 
-const Worker = require('../models/Worker');
-const GeoJob = require('../models/GeoJob');
+const { Worker, GeoJob, sequelize } = require('../models');
+const { QueryTypes } = require('sequelize');
 
 /**
  * @route   GET /api/location/workers/nearby
@@ -21,32 +21,18 @@ router.get('/workers/nearby', async (req, res) => {
         const longitude = parseFloat(lng);
         const maxDist = radius ? parseFloat(radius) * 1000 : 5000; // Default to 5km if not specified
 
-        // MongoDB GeoJSON uses [longitude, latitude]
-        const nearbyWorkers = await Worker.aggregate([
-            {
-                $geoNear: {
-                    near: { type: "Point", coordinates: [longitude, latitude] },
-                    distanceField: "distance",
-                    maxDistance: maxDist, // 5000 meters = 5km
-                    query: {
-                        isAvailable: true,
-                        availableUntil: { $gt: new Date() },
-                        ...(jobType && { jobType })
-                    },
-                    spherical: true
-                }
-            },
-            {
-                $sort: { distance: 1 }
-            }
-        ]);
+        // Use MySQL spatial functions (ST_Distance_Sphere) to compute distances
+        const pointWkt = `POINT(${longitude} ${latitude})`;
+        let sql = `SELECT *, ST_Distance_Sphere(location, ST_GeomFromText(:point)) AS distance FROM Workers WHERE isAvailable = 1 AND availableUntil > NOW()`;
+        if (jobType) sql += ` AND jobType = :jobType`;
+        sql += ` AND ST_Distance_Sphere(location, ST_GeomFromText(:point)) <= :maxDist ORDER BY distance ASC`;
 
-        res.status(200).json({
-            success: true,
-            count: nearbyWorkers.length,
-            radiusLimit: maxDist,
-            data: nearbyWorkers
-        });
+        const replacements = { point: pointWkt, maxDist };
+        if (jobType) replacements.jobType = jobType;
+
+        const nearbyWorkers = await sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
+
+        res.status(200).json({ success: true, count: nearbyWorkers.length, radiusLimit: maxDist, data: nearbyWorkers });
     } catch (error) {
         console.error('Error fetching nearby workers:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
@@ -70,29 +56,11 @@ router.get('/jobs/nearby', async (req, res) => {
         const longitude = parseFloat(lng);
         const maxDist = radius ? parseFloat(radius) * 1000 : 5000;
 
-        const nearbyJobs = await GeoJob.aggregate([
-            {
-                $geoNear: {
-                    near: { type: "Point", coordinates: [longitude, latitude] },
-                    distanceField: "distance",
-                    maxDistance: maxDist,
-                    query: {
-                        expiresAt: { $gt: new Date() }
-                    },
-                    spherical: true
-                }
-            },
-            {
-                $sort: { distance: 1 }
-            }
-        ]);
-
-        res.status(200).json({
-            success: true,
-            count: nearbyJobs.length,
-            radiusLimit: maxDist,
-            data: nearbyJobs
-        });
+        const pointWkt = `POINT(${longitude} ${latitude})`;
+        let sql = `SELECT *, ST_Distance_Sphere(location, ST_GeomFromText(:point)) AS distance FROM GeoJobs WHERE expiresAt > NOW()`;
+        sql += ` AND ST_Distance_Sphere(location, ST_GeomFromText(:point)) <= :maxDist ORDER BY distance ASC`;
+        const nearbyJobs = await sequelize.query(sql, { replacements: { point: pointWkt, maxDist }, type: QueryTypes.SELECT });
+        res.status(200).json({ success: true, count: nearbyJobs.length, radiusLimit: maxDist, data: nearbyJobs });
     } catch (error) {
         console.error('Error fetching nearby jobs:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });

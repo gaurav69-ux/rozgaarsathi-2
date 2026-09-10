@@ -1,26 +1,16 @@
-const EmployerProfile = require('../models/EmployerProfile');
+const { EmployerProfile, Job, Application, User, sequelize } = require('../models');
 const { uploadToS3 } = require('../middleware/uploadMiddleware');
 const path = require('path');
 const getUploadedFilePath = (file) => file?.location || file?.path || null;
-const Job = require('../models/Job');
-const Application = require('../models/Application');
-const User = require('../models/User');
 
 // @desc    Get employer profile
 // @route   GET /api/employer/profile
 // @access  Private (Employer only)
 exports.getProfile = async (req, res) => {
   try {
-    const profile = await EmployerProfile.findOne({ userId: req.user.id }).populate('userId', 'name email phone');
-
-    if (!profile) {
-      return res.status(404).json({ message: 'Profile not found' });
-    }
-
-    res.json({
-      success: true,
-      profile
-    });
+    const profile = await EmployerProfile.findOne({ where: { userId: req.user.id }, include: [{ model: User, as: 'user', attributes: ['name', 'email', 'phone'] }] });
+    if (!profile) return res.status(404).json({ message: 'Profile not found' });
+    res.json({ success: true, profile });
   } catch (error) {
     console.error('Get employer profile error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -34,13 +24,11 @@ exports.updateProfile = async (req, res) => {
   try {
     const { companyName, website, description, location, industry, name, phone } = req.body;
 
-    // Update User details if provided
     if (name || phone) {
       const userUpdateData = {};
       if (name) userUpdateData.name = name;
       if (phone) userUpdateData.phone = phone;
-
-      await User.findByIdAndUpdate(req.user.id, userUpdateData);
+      await User.update(userUpdateData, { where: { id: req.user.id } });
     }
 
     const updateData = {
@@ -57,21 +45,11 @@ exports.updateProfile = async (req, res) => {
       updateData.companyLogo = s3Url;
     }
 
-    const profile = await EmployerProfile.findOneAndUpdate(
-      { userId: req.user.id },
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    if (!profile) {
-      return res.status(404).json({ message: 'Profile not found' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Profile updated successfully',
-      profile
-    });
+    let profile = await EmployerProfile.findOne({ where: { userId: req.user.id } });
+    if (!profile) return res.status(404).json({ message: 'Profile not found' });
+    await profile.update(updateData);
+    profile = await EmployerProfile.findByPk(profile.id, { include: [{ model: User, as: 'user', attributes: ['name', 'email', 'phone'] }] });
+    res.json({ success: true, message: 'Profile updated successfully', profile });
   } catch (error) {
     console.error('Update employer profile error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -84,37 +62,21 @@ exports.updateProfile = async (req, res) => {
 exports.getMyJobs = async (req, res) => {
   try {
 
-    // Include jobs removed by admin, but mark them
-    const jobs = await Job.find({ employerId: req.user.id })
-      .sort({ postedDate: -1 });
-
-    // Aggregate application counts for these jobs
-    const jobIds = jobs.map(j => j._id);
-    const counts = await Application.aggregate([
-      { $match: { jobId: { $in: jobIds } } },
-      { $group: { _id: '$jobId', count: { $sum: 1 } } }
-    ]);
-
+    const jobs = await Job.findAll({ where: { employerId: req.user.id }, order: [['postedDate', 'DESC']] });
+    const jobIds = jobs.map(j => j.id);
+    const counts = await Application.findAll({ where: { jobId: jobIds }, attributes: ['jobId', [sequelize.fn('COUNT', sequelize.col('id')), 'count']], group: ['jobId'] });
     const countsMap = {};
-    counts.forEach(c => { countsMap[c._id.toString()] = c.count; });
-
-
+    counts.forEach(c => { countsMap[c.jobId] = Number(c.get('count')); });
     const jobsWithCounts = jobs.map(job => {
-      const jobObj = job.toObject();
-      jobObj.applicationCount = countsMap[job._id.toString()] || 0;
-      // Mark if removed by admin
-      if (job.removedByAdmin) {
+      const jobObj = job.get({ plain: true });
+      jobObj.applicationCount = countsMap[job.id] || 0;
+      if (jobObj.removedByAdmin) {
         jobObj.removedByAdmin = true;
-        jobObj.removedReason = job.removedReason || 'This job was removed by an administrator.';
+        jobObj.removedReason = jobObj.removedReason || 'This job was removed by an administrator.';
       }
       return jobObj;
     });
-
-    res.json({
-      success: true,
-      count: jobsWithCounts.length,
-      jobs: jobsWithCounts
-    });
+    res.json({ success: true, count: jobsWithCounts.length, jobs: jobsWithCounts });
   } catch (error) {
     console.error('Get my jobs error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });

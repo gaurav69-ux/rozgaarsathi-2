@@ -1,6 +1,4 @@
-const User = require('../models/User');
-const JobSeekerProfile = require('../models/JobSeekerProfile');
-const EmployerProfile = require('../models/EmployerProfile');
+const { User, JobSeekerProfile, EmployerProfile } = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
@@ -24,7 +22,7 @@ exports.register = async (req, res) => {
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
@@ -45,19 +43,19 @@ exports.register = async (req, res) => {
     // Create profile based on role
     if (role === 'jobseeker') {
       await JobSeekerProfile.create({
-        userId: user._id,
+        userId: user.id,
         name: name,
         email: email
       });
     } else if (role === 'employer') {
       await EmployerProfile.create({
-        userId: user._id,
+        userId: user.id,
         companyName: companyName || name
       });
     }
 
     // Generate token
-    const token = generateToken(user._id, user.role);
+    const token = generateToken(user.id, user.role);
 
     // Set cookie (optional, for browser)
     res.cookie('token', token, {
@@ -71,7 +69,7 @@ exports.register = async (req, res) => {
       message: 'User registered successfully',
       token, // IMPORTANT: Send token in response
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         role: user.role
@@ -96,7 +94,7 @@ exports.login = async (req, res) => {
     }
 
     // Check if user exists
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ where: { email } });
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
@@ -108,7 +106,7 @@ exports.login = async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user._id, user.role);
+    const token = generateToken(user.id, user.role);
 
     // Set cookie (optional, for browser)
     res.cookie('token', token, {
@@ -122,7 +120,7 @@ exports.login = async (req, res) => {
       message: 'Login successful',
       token, // IMPORTANT: Send token in response
       user: {
-        id: user._id,
+        id: user.id,
         name: user.name,
         email: user.email,
         role: user.role
@@ -139,22 +137,18 @@ exports.login = async (req, res) => {
 // @access  Private
 exports.getProfile = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
+    const userRecord = await User.findByPk(req.user.id, { attributes: { exclude: ['password'] } });
 
     let profile;
-    if (user.role === 'jobseeker') {
-      profile = await JobSeekerProfile.findOne({ userId: user._id }).populate('savedJobs');
-    } else if (user.role === 'employer') {
-      profile = await EmployerProfile.findOne({ userId: user._id });
-    } else if (user.role === 'admin') {
+    if (userRecord.role === 'jobseeker') {
+      profile = await JobSeekerProfile.findOne({ where: { userId: userRecord.id }, include: [{ model: require('../models').Job, as: 'savedJobs' }] });
+    } else if (userRecord.role === 'employer') {
+      profile = await EmployerProfile.findOne({ where: { userId: userRecord.id } });
+    } else if (userRecord.role === 'admin') {
       profile = { isAdmin: true };
     }
 
-    res.json({
-      success: true,
-      user,
-      profile
-    });
+    res.json({ success: true, user: userRecord, profile });
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });

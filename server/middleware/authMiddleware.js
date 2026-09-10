@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { User } = require('../models');
 
 // Protect routes - verify JWT token
 exports.protect = async (req, res, next) => {
@@ -19,11 +19,11 @@ exports.protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Get user from token (exclude password)
-    req.user = await User.findById(decoded.id).select('-password');
+    const user = await User.findByPk(decoded.id, { attributes: { exclude: ['password'] } });
+    if (!user) return res.status(401).json({ message: 'User not found' });
 
-    if (!req.user) {
-      return res.status(401).json({ message: 'User not found' });
-    }
+    // attach minimal user info
+    req.user = { id: user.id, role: user.role };
 
     next();
   } catch (error) {

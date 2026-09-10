@@ -1,6 +1,5 @@
-const Job = require('../models/Job');
-const JobSeekerProfile = require('../models/JobSeekerProfile');
-const EmployerProfile = require('../models/EmployerProfile');
+const { Job, JobSeekerProfile, EmployerProfile, User } = require('../models');
+const { Op } = require('sequelize');
 
 // @desc    Get all jobs with filters
 // @route   GET /api/jobs
@@ -18,42 +17,27 @@ exports.getAllJobs = async (req, res) => {
       limit = 10
     } = req.query;
 
-    // Build query
-    const query = { status: 'active', removedByAdmin: { $ne: true } };
+    // Build Sequelize where clause
+    const where = { status: 'active', removedByAdmin: { [Op.ne]: true } };
+    if (title) where.title = { [Op.like]: `%${title}%` };
+    if (location) where.location = { [Op.like]: `%${location}%` };
+    if (category) where.category = category;
+    if (jobType) where.jobType = jobType;
+    if (minSalary) where.salaryMin = { [Op.gte]: Number(minSalary) };
+    if (maxSalary) where.salaryMax = { [Op.lte]: Number(maxSalary) };
 
-    if (title) {
-      query.title = { $regex: title, $options: 'i' };
-    }
-    if (location) {
-      query.location = { $regex: location, $options: 'i' };
-    }
-    if (category) {
-      query.category = category;
-    }
-    if (jobType) {
-      query.jobType = jobType;
-    }
-    if (minSalary) {
-      query['salary.min'] = { $gte: Number(minSalary) };
-    }
-    if (maxSalary) {
-      query['salary.max'] = { $lte: Number(maxSalary) };
-    }
-
-    // Execute query with pagination
-    const jobs = await Job.find(query)
-      .populate('employerId', 'name email')
-      .sort({ postedDate: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit)
-      .exec();
-
-    // Get total count
-    const count = await Job.countDocuments(query);
+    const offset = (Number(page) - 1) * Number(limit);
+    const { count, rows } = await Job.findAndCountAll({
+      where,
+      include: [{ model: User, as: 'employer', attributes: ['name', 'email'] }],
+      order: [['postedDate', 'DESC']],
+      limit: Number(limit),
+      offset
+    });
 
     res.json({
       success: true,
-      jobs,
+      jobs: rows,
       totalPages: Math.ceil(count / limit),
       currentPage: Number(page),
       total: count
@@ -69,17 +53,9 @@ exports.getAllJobs = async (req, res) => {
 // @access  Public
 exports.getJobById = async (req, res) => {
   try {
-    const job = await Job.findById(req.params.id)
-      .populate('employerId', 'name email');
-
-    if (!job) {
-      return res.status(404).json({ message: 'Job not found' });
-    }
-
-    res.json({
-      success: true,
-      job
-    });
+    const job = await Job.findByPk(req.params.id, { include: [{ model: User, as: 'employer', attributes: ['name', 'email'] }] });
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    res.json({ success: true, job });
   } catch (error) {
     console.error('Get job by ID error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -92,21 +68,10 @@ exports.getJobById = async (req, res) => {
 exports.createJob = async (req, res) => {
   try {
     // Fetch employer profile for company name
-    const profile = await EmployerProfile.findOne({ userId: req.user.id });
-
-    const jobData = {
-      ...req.body,
-      employerId: req.user.id,
-      companyName: profile ? profile.companyName : 'Independent Employer'
-    };
-
+    const profile = await EmployerProfile.findOne({ where: { userId: req.user.id } });
+    const jobData = { ...req.body, employerId: req.user.id, companyName: profile ? profile.companyName : 'Independent Employer' };
     const job = await Job.create(jobData);
-
-    res.status(201).json({
-      success: true,
-      message: 'Job created successfully',
-      job
-    });
+    res.status(201).json({ success: true, message: 'Job created successfully', job });
   } catch (error) {
     console.error('Create job error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -118,28 +83,11 @@ exports.createJob = async (req, res) => {
 // @access  Private (Employer only)
 exports.updateJob = async (req, res) => {
   try {
-    const job = await Job.findById(req.params.id);
-
-    if (!job) {
-      return res.status(404).json({ message: 'Job not found' });
-    }
-
-    // Check if user is the owner
-    if (job.employerId.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to update this job' });
-    }
-
-    const updatedJob = await Job.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
-
-    res.json({
-      success: true,
-      message: 'Job updated successfully',
-      job: updatedJob
-    });
+    const job = await Job.findByPk(req.params.id);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    if (job.employerId.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized to update this job' });
+    const updatedJob = await job.update(req.body);
+    res.json({ success: true, message: 'Job updated successfully', job: updatedJob });
   } catch (error) {
     console.error('Update job error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -151,34 +99,22 @@ exports.updateJob = async (req, res) => {
 // @access  Private (Employer or Admin)
 exports.deleteJob = async (req, res) => {
   try {
-    const job = await Job.findById(req.params.id).populate('employerId', 'email name');
-
-    if (!job) {
-      return res.status(404).json({ message: 'Job not found' });
-    }
-
-    // Allow admin or employer (owner) to delete
+    const job = await Job.findByPk(req.params.id, { include: [{ model: User, as: 'employer', attributes: ['email', 'name'] }] });
+    if (!job) return res.status(404).json({ message: 'Job not found' });
     let deletedBy = 'employer';
     if (req.user.role === 'admin') {
       deletedBy = 'admin';
-      // Soft delete: mark as removed by admin
-      job.removedByAdmin = true;
-      job.removedReason = 'This job was removed by an administrator.';
-      await job.save();
+      await job.update({ removedByAdmin: true, removedReason: 'This job was removed by an administrator.' });
     } else if (job.employerId.toString() !== req.user.id) {
       return res.status(403).json({ message: 'Not authorized to delete this job' });
     } else {
-      // Employer hard delete
-      await Job.findByIdAndDelete(req.params.id);
+      await job.destroy();
     }
-
-    // TODO: Optionally, send email/notification to employer here
-
     res.json({
       success: true,
       message: deletedBy === 'admin' ? 'Job deleted by admin. Employer will be notified.' : 'Job deleted successfully',
       deletedBy,
-      employer: job.employerId ? { email: job.employerId.email, name: job.employerId.name } : null,
+      employer: job.employer ? { email: job.employer.email, name: job.employer.name } : null,
       jobTitle: job.title
     });
   } catch (error) {
@@ -192,36 +128,16 @@ exports.deleteJob = async (req, res) => {
 // @access  Private (Job Seeker only)
 exports.saveJob = async (req, res) => {
   try {
-    const profile = await JobSeekerProfile.findOne({ userId: req.user.id });
-
-    if (!profile) {
-      return res.status(404).json({ message: 'Profile not found' });
-    }
-
-    const jobId = req.params.id;
-    const isSaved = profile.savedJobs.includes(jobId);
-
+    const profile = await JobSeekerProfile.findOne({ where: { userId: req.user.id } });
+    if (!profile) return res.status(404).json({ message: 'Profile not found' });
+    const jobId = Number(req.params.id);
+    const isSaved = await profile.hasSavedJob(jobId);
     if (isSaved) {
-      // Remove from saved jobs
-      profile.savedJobs = profile.savedJobs.filter(id => id.toString() !== jobId);
-      await profile.save();
-
-      return res.json({
-        success: true,
-        message: 'Job removed from saved list',
-        saved: false
-      });
+      await profile.removeSavedJob(jobId);
+      return res.json({ success: true, message: 'Job removed from saved list', saved: false });
     }
-
-    // Add to saved jobs
-    profile.savedJobs.push(jobId);
-    await profile.save();
-
-    res.json({
-      success: true,
-      message: 'Job saved successfully',
-      saved: true
-    });
+    await profile.addSavedJob(jobId);
+    res.json({ success: true, message: 'Job saved successfully', saved: true });
   } catch (error) {
     console.error('Save job error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });

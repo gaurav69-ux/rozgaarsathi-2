@@ -1,8 +1,7 @@
-const Application = require('../models/Application');
+const { Application, Job, User } = require('../models');
 const path = require('path');
 
 const getUploadedFilePath = (file) => file?.location || file?.path || null;
-const Job = require('../models/Job');
 
 // @desc    Apply to a job
 // @route   POST /api/applications
@@ -10,50 +9,22 @@ const Job = require('../models/Job');
 exports.applyJob = async (req, res) => {
   try {
     const { jobId, coverLetter } = req.body;
+    const job = await Job.findByPk(jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    if (job.status !== 'active') return res.status(400).json({ message: 'This job is no longer accepting applications' });
 
-    // Check if job exists
-    const job = await Job.findById(jobId);
-    if (!job) {
-      return res.status(404).json({ message: 'Job not found' });
-    }
+    const existingApplication = await Application.findOne({ where: { jobId, jobSeekerId: req.user.id } });
+    if (existingApplication) return res.status(400).json({ message: 'You have already applied to this job' });
 
-    // Check if job is active
-    if (job.status !== 'active') {
-      return res.status(400).json({ message: 'This job is no longer accepting applications' });
-    }
-
-    // Check if already applied
-    const existingApplication = await Application.findOne({
-      jobId,
-      jobSeekerId: req.user.id
-    });
-
-    if (existingApplication) {
-      return res.status(400).json({ message: 'You have already applied to this job' });
-    }
-
-    // Upload resume to S3 if present
     let resumeUrl = null;
     if (req.file) {
       const { uploadToS3 } = require('../middleware/uploadMiddleware');
       resumeUrl = await uploadToS3(req.file.buffer, `${req.user.id}-resume${path.extname(req.file.originalname)}`, req.file.mimetype, 'resumes');
     }
-    // Create application (resume is optional)
-    const application = await Application.create({
-      jobId,
-      jobSeekerId: req.user.id,
-      resume: resumeUrl,
-      coverLetter
-    });
 
-    // Populate job and user details
-    await application.populate('jobId', 'title company');
-
-    res.status(201).json({
-      success: true,
-      message: 'Application submitted successfully',
-      application
-    });
+    const application = await Application.create({ jobId, jobSeekerId: req.user.id, resume: resumeUrl, coverLetter });
+    const appWithJob = await Application.findByPk(application.id, { include: [{ model: Job, as: 'job', attributes: ['title', 'companyName'] }] });
+    res.status(201).json({ success: true, message: 'Application submitted successfully', application: appWithJob });
   } catch (error) {
     console.error('Apply job error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -65,18 +36,12 @@ exports.applyJob = async (req, res) => {
 // @access  Private (Job Seeker only)
 exports.getMyApplications = async (req, res) => {
   try {
-    const applications = await Application.find({ jobSeekerId: req.user.id })
-      .populate({
-        path: 'jobId',
-        populate: { path: 'employerId', select: 'name email' }
-      })
-      .sort({ appliedDate: -1 });
-
-    res.json({
-      success: true,
-      count: applications.length,
-      applications
+    const applications = await Application.findAll({
+      where: { jobSeekerId: req.user.id },
+      include: [{ model: Job, as: 'job', include: [{ model: User, as: 'employer', attributes: ['name', 'email'] }] }],
+      order: [['appliedDate', 'DESC']]
     });
+    res.json({ success: true, count: applications.length, applications });
   } catch (error) {
     console.error('Get my applications error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -89,34 +54,12 @@ exports.getMyApplications = async (req, res) => {
 exports.getJobApplications = async (req, res) => {
   try {
     const { jobId } = req.params;
+    const job = await Job.findByPk(jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    if (job.employerId.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized to view these applications' });
 
-    // validate jobId is a valid ObjectId
-    const mongoose = require('mongoose');
-    if (!mongoose.Types.ObjectId.isValid(jobId)) {
-      return res.status(400).json({ message: 'Invalid jobId' });
-    }
-
-    // Verify job exists and belongs to employer
-    const job = await Job.findById(jobId);
-    if (!job) {
-      return res.status(404).json({ message: 'Job not found' });
-    }
-
-    if (job.employerId.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to view these applications' });
-    }
-
-    // Get all applications for this job
-    const applications = await Application.find({ jobId })
-      .populate('jobSeekerId', 'name email phone')
-      .sort({ appliedDate: -1 });
-
-    res.json({
-      success: true,
-      count: applications.length,
-      jobTitle: job.title,
-      applications
-    });
+    const applications = await Application.findAll({ where: { jobId }, include: [{ model: User, as: 'jobSeeker', attributes: ['name', 'email', 'phone'] }], order: [['appliedDate', 'DESC']] });
+    res.json({ success: true, count: applications.length, jobTitle: job.title, applications });
   } catch (error) {
     console.error('Get job applications error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -129,32 +72,15 @@ exports.getJobApplications = async (req, res) => {
 exports.updateApplicationStatus = async (req, res) => {
   try {
     const { status } = req.body;
-
-    // Validate status
     const validStatuses = ['applied', 'under_review', 'shortlisted', 'rejected', 'accepted'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ message: 'Invalid status value' });
-    }
+    if (!validStatuses.includes(status)) return res.status(400).json({ message: 'Invalid status value' });
 
-    const application = await Application.findById(req.params.id).populate('jobId');
+    const application = await Application.findByPk(req.params.id, { include: [{ model: Job, as: 'job' }] });
+    if (!application) return res.status(404).json({ message: 'Application not found' });
+    if (application.job.employerId.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized to update this application' });
 
-    if (!application) {
-      return res.status(404).json({ message: 'Application not found' });
-    }
-
-    // Verify the job belongs to the employer
-    if (application.jobId.employerId.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to update this application' });
-    }
-
-    application.status = status;
-    await application.save();
-
-    res.json({
-      success: true,
-      message: 'Application status updated successfully',
-      application
-    });
+    await application.update({ status });
+    res.json({ success: true, message: 'Application status updated successfully', application });
   } catch (error) {
     console.error('Update application status error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -166,21 +92,10 @@ exports.updateApplicationStatus = async (req, res) => {
 // @access  Private (Employer only)
 exports.getApplicationsForEmployer = async (req, res) => {
   try {
-    // Find jobs that belong to this employer
-    const jobs = await Job.find({ employerId: req.user.id }).select('_id title');
-    const jobIds = jobs.map(j => j._id);
-
-    // Fetch applications for these jobs
-    const applications = await Application.find({ jobId: { $in: jobIds } })
-      .populate('jobId', 'title')
-      .populate('jobSeekerId', 'name email')
-      .sort({ appliedDate: -1 });
-
-    res.json({
-      success: true,
-      count: applications.length,
-      applications
-    });
+    const jobs = await Job.findAll({ where: { employerId: req.user.id }, attributes: ['id', 'title'] });
+    const jobIds = jobs.map(j => j.id);
+    const applications = await Application.findAll({ where: { jobId: jobIds }, include: [{ model: Job, as: 'job', attributes: ['title'] }, { model: User, as: 'jobSeeker', attributes: ['name', 'email'] }], order: [['appliedDate', 'DESC']] });
+    res.json({ success: true, count: applications.length, applications });
   } catch (error) {
     console.error('Get employer applications error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });

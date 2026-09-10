@@ -1,6 +1,5 @@
-const JobSeekerProfile = require('../models/JobSeekerProfile');
+const { JobSeekerProfile, Job, User } = require('../models');
 const path = require('path');
-
 const getUploadedFilePath = (file) => file?.location || file?.path || null;
 
 // @desc    Get job seeker profile
@@ -8,17 +7,9 @@ const getUploadedFilePath = (file) => file?.location || file?.path || null;
 // @access  Private (Job Seeker only)
 exports.getProfile = async (req, res) => {
   try {
-    const profile = await JobSeekerProfile.findOne({ userId: req.user.id })
-      .populate('savedJobs');
-
-    if (!profile) {
-      return res.status(404).json({ message: 'Profile not found' });
-    }
-
-    res.json({
-      success: true,
-      profile
-    });
+    const profile = await JobSeekerProfile.findOne({ where: { userId: req.user.id }, include: [{ model: Job, as: 'savedJobs' }] });
+    if (!profile) return res.status(404).json({ message: 'Profile not found' });
+    res.json({ success: true, profile });
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -60,27 +51,15 @@ exports.updateProfileDetails = async (req, res) => {
       updateData.resume = s3Url;
     }
 
-    // Find or create profile
-    let profile = await JobSeekerProfile.findOne({ userId: req.user.id });
-
+    let profile = await JobSeekerProfile.findOne({ where: { userId: req.user.id } });
     if (!profile) {
-      // Create new profile
       updateData.userId = req.user.id;
       profile = await JobSeekerProfile.create(updateData);
     } else {
-      // Update existing profile
-      profile = await JobSeekerProfile.findOneAndUpdate(
-        { userId: req.user.id },
-        updateData,
-        { new: true, runValidators: true }
-      );
+      await profile.update(updateData);
+      profile = await JobSeekerProfile.findByPk(profile.id);
     }
-
-    res.json({
-      success: true,
-      message: 'Profile updated successfully',
-      ...profile.toObject()
-    });
+    res.json({ success: true, message: 'Profile updated successfully', profile });
   } catch (error) {
     console.error('Update profile error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -114,21 +93,11 @@ exports.updateProfile = async (req, res) => {
       updateData.resume = s3Url;
     }
 
-    const profile = await JobSeekerProfile.findOneAndUpdate(
-      { userId: req.user.id },
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    if (!profile) {
-      return res.status(404).json({ message: 'Profile not found' });
-    }
-
-    res.json({
-      success: true,
-      message: 'Profile updated successfully',
-      profile
-    });
+    let profile = await JobSeekerProfile.findOne({ where: { userId: req.user.id } });
+    if (!profile) return res.status(404).json({ message: 'Profile not found' });
+    await profile.update(updateData);
+    profile = await JobSeekerProfile.findByPk(profile.id);
+    res.json({ success: true, message: 'Profile updated successfully', profile });
   } catch (error) {
     console.error('Update profile error:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -141,14 +110,8 @@ exports.updateProfile = async (req, res) => {
 exports.getProfileByUserId = async (req, res) => {
   try {
     const { userId } = req.params;
-    const profile = await JobSeekerProfile.findOne({ userId })
-      .populate('savedJobs')
-      .populate('userId', 'name email phone');
-
-    if (!profile) {
-      return res.status(404).json({ message: 'Profile not found' });
-    }
-
+    const profile = await JobSeekerProfile.findOne({ where: { userId }, include: [{ model: Job, as: 'savedJobs' }, { model: User, as: 'user', attributes: ['name', 'email', 'phone'] }] });
+    if (!profile) return res.status(404).json({ message: 'Profile not found' });
     res.json({ success: true, profile });
   } catch (error) {
     console.error('Get profile by userId error:', error);
